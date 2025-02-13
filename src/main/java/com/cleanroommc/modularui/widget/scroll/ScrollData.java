@@ -59,6 +59,7 @@ public abstract class ScrollData {
     private int scrollSize;
     private int scroll;
     protected boolean dragging;
+    protected int clickOffset;
 
     private int animatingTo = 0;
     private final Animator scrollAnimator = new Animator(30, Interpolation.QUAD_OUT);
@@ -153,11 +154,18 @@ public abstract class ScrollData {
         return getVisibleSize(area, false);
     }
 
-    public final int getVisibleSize(ScrollArea area, boolean isOtherActive) {
-        return Math.max(0, getFullVisibleSize(area, isOtherActive) - area.getPadding().getTotal(this.axis));
+    public final int getVisibleSize(ScrollArea area, int fullVisibleSize) {
+        return Math.max(0, fullVisibleSize - area.getPadding().getTotal(this.axis));
     }
 
-    public abstract float getProgress(ScrollArea area, int x, int y);
+    public final int getVisibleSize(ScrollArea area, boolean isOtherActive) {
+        return getVisibleSize(area, getFullVisibleSize(area, isOtherActive));
+    }
+
+    public float getProgress(ScrollArea area, int mainAxisPos, int crossAxisPos) {
+        float fullSize = (float) getFullVisibleSize(area);
+        return (mainAxisPos - area.getPoint(this.axis) - clickOffset) / (fullSize - getScrollBarLength(area));
+    }
 
     @Nullable
     public abstract ScrollData getOtherScrollData(ScrollArea area);
@@ -165,31 +173,35 @@ public abstract class ScrollData {
     /**
      * Clamp scroll to the bounds of the scroll size;
      */
-    public void clamp(ScrollArea area) {
+    public boolean clamp(ScrollArea area) {
         int size = getVisibleSize(area);
 
+        int old = this.scroll;
         if (this.scrollSize <= size) {
             this.scroll = 0;
         } else {
             this.scroll = MathHelper.clamp(this.scroll, 0, this.scrollSize - size);
         }
+        return old != this.scroll; // returns true if the area was clamped
     }
 
-    public void scrollBy(ScrollArea area, int x) {
+    public boolean scrollBy(ScrollArea area, int x) {
         this.scroll += x;
-        this.clamp(area);
+        return clamp(area);
     }
 
     /**
      * Scroll to the position in the scroll area
      */
-    public void scrollTo(ScrollArea area, int x) {
+    public boolean scrollTo(ScrollArea area, int x) {
         this.scroll = x;
-        this.clamp(area);
+        return clamp(area);
     }
 
     public void animateTo(ScrollArea area, int x) {
-        this.scrollAnimator.setCallback(value -> scrollTo(area, (int) value));
+        this.scrollAnimator.setCallback(value -> {
+            return scrollTo(area, (int) value); // stop animation once an edge is hit
+        });
         this.scrollAnimator.setValueBounds(this.scroll, x);
         this.scrollAnimator.forward();
         this.animatingTo = x;
@@ -217,7 +229,8 @@ public abstract class ScrollData {
 
     public int getScrollBarLength(ScrollArea area) {
         boolean isOtherActive = isOtherScrollBarActive(area, false);
-        return (int) (getVisibleSize(area, isOtherActive) * getFullVisibleSize(area, isOtherActive) / (float) this.scrollSize);
+        int length = (int) (getVisibleSize(area, isOtherActive) * getFullVisibleSize(area, isOtherActive) / (float) this.scrollSize);
+        return Math.max(length, 4); // min length of 4
     }
 
     public abstract boolean isInsideScrollbarArea(ScrollArea area, int x, int y);
@@ -226,8 +239,21 @@ public abstract class ScrollData {
         return this.scrollAnimator.isRunning();
     }
 
+    public int getAnimationDirection() {
+        if (!isAnimating()) return 0;
+        return this.scrollAnimator.getMax() >= this.scrollAnimator.getMin() ? 1 : -1;
+    }
+
     public int getAnimatingTo() {
         return this.animatingTo;
+    }
+
+    public int getScrollBarStart(ScrollArea area, int scrollBarLength, int fullVisibleSize) {
+        return ((fullVisibleSize - scrollBarLength) * getScroll()) / (getScrollSize() - getVisibleSize(area, fullVisibleSize));
+    }
+
+    public int getScrollBarStart(ScrollArea area, int scrollBarLength, boolean isOtherActive) {
+        return getScrollBarStart(area, scrollBarLength, getFullVisibleSize(area, isOtherActive));
     }
 
     @SideOnly(Side.CLIENT)
@@ -240,5 +266,24 @@ public abstract class ScrollData {
         GuiDraw.drawRect(x + 1, y + 1, w - 2, h - 2, 0xffaaaaaa);
     }
 
-    public abstract boolean onMouseClicked(ScrollArea area, int x, int y, int button);
+    public boolean onMouseClicked(ScrollArea area, int mainAxisPos, int crossAxisPos, int button) {
+        if (isOnAxisStart() ? crossAxisPos <= area.getPoint(this.axis.getOther()) + getThickness() : crossAxisPos >= area.getEndPoint(this.axis.getOther()) - getThickness()) {
+            this.dragging = true;
+            this.clickOffset = mainAxisPos;
+
+            int scrollBarSize = getScrollBarLength(area);
+            int start = getScrollBarStart(area, scrollBarSize, false);
+            int areaStart = area.getPoint(this.axis);
+            boolean clickInsideBar = mainAxisPos >= areaStart + start && mainAxisPos <= areaStart + start + scrollBarSize;
+
+            if (clickInsideBar) {
+                this.clickOffset = mainAxisPos - areaStart - start; // relative click position inside bar
+            } else {
+                this.clickOffset = scrollBarSize / 2; // assume click position in center of bar
+            }
+
+            return true;
+        }
+        return false;
+    }
 }
